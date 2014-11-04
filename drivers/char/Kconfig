@@ -607,5 +607,11 @@ config TILE_SROM
 	  device appear much like a simple EEPROM, and knows
 	  how to partition a single ROM for multiple purposes.
 
-endmenu
+config MXP
+	tristate "MXP driver for accelerator"
+	depends on ARM
+	default n
+	help
+	  The MXP driver is provides access to shared memory and accelerator registers
 
+endmenu
