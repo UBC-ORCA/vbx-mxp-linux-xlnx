@@ -11,7 +11,7 @@
 #include <asm/uaccess.h>
 #include <linux/mman.h>
 #include <linux/mxp.h>
-
+#include <linux/vmalloc.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Device to mmap CMA");
 MODULE_LICENSE("Proprietary");
@@ -80,33 +80,69 @@ static int __init cma_init(void)
 
     return 0;    // Non-zero return means that the module couldn't be loaded.
 }
+struct vm_private_data{
+	void* virt;
+	dma_addr_t dma_handle;
+	size_t len;
+};
+static void vm_free(struct vm_area_struct * vma)
+{
+	struct vm_private_data* pdat = vma->vm_private_data;
+	dma_free_coherent(dev_cma,pdat->len,pdat->virt,pdat->dma_handle);
+	kfree(pdat);
+}
+
+static struct vm_operations_struct vm_ops ={
+	.close = vm_free
+};
 static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 {
-	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 	int retval=0;
 	unsigned long size = vma->vm_end - vma->vm_start;
 	int pfn;
 	dma_addr_t dma_handle;
 	void** kvirt;
 	size_t len=vma->vm_end - vma->vm_start;
-	vma->vm_flags |= (VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+	struct vm_private_data* pdat;
+	vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
 	kvirt=dma_zalloc_coherent(dev_cma,len,&dma_handle,GFP_USER);
+	if(kvirt == NULL ){
+		printk(KERN_ERR
+		       "cma_mmap - failed dma alloc\n");
+		return -ENOMEM;
+	}else{
+		//since we have allocated memory, we should also free it eventually.
+		//to do this we register a callback in the vma to be called on munmap
+		pdat = kmalloc(sizeof(vm_private_data),GFP_KERNEL);
+		if(pdat == NULL){
+			//we have issues!
+			dma_free_coherent(dev_cma,len,kvirt,dma_hadle);
+			printk(KERN_ERR
+			       "cma_mmap - failed dma alloc\n");
+			return -ENOMEM;
+
+		}
+		pdat->virt = kvirt;
+		pdat->dma_handle = dma_handle;
+		pdat->len = len;
+
+		vma->vm_private_data = pdat;
+		vma->vm_ops = &vm_ops;
+	}
 
 	//hack to return physical address by putting it in the buffer
-	debug(dma_handle);
 	kvirt[0]=(void*)dma_handle;
 	pfn = (dma_handle) >> PAGE_SHIFT;
 
-	//TODO: see if we can get rid of that io part
-	if( io_remap_pfn_range(vma, vma->vm_start, pfn, size,
-	                                    vma->vm_page_prot)) {
+	if( remap_pfn_range(vma, vma->vm_start, pfn, size,
+	                    vma->vm_page_prot)) {
 		printk(KERN_ERR
 		       "cma_mmap - failed to map the instruction memory\n");
 		retval = -EAGAIN;
 	}
-	dma_free_coherent(dev_cma,len,dma_handle,GFP_USER);
+
 	return retval;
 }
 static int cma_open(struct inode *i, struct file *f){return 0;}
