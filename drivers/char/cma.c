@@ -98,15 +98,17 @@ static struct vm_operations_struct vm_ops ={
 static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 {
 	int retval=0;
-	unsigned long size = vma->vm_end - vma->vm_start;
 	int pfn;
 	dma_addr_t dma_handle;
 	void** kvirt;
-	size_t len=vma->vm_end - vma->vm_start;
+	size_t len;
 	struct vm_private_data* pdat;
+	len =vma->vm_end - vma->vm_start;
 	vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
+	//because this buffer is about to be used by userspace, it is
+	//important for it to be sanitized, so use zalloc
 	kvirt=dma_zalloc_coherent(dev_cma,len,&dma_handle,GFP_USER);
 	if(kvirt == NULL ){
 		printk(KERN_ERR
@@ -132,11 +134,14 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 		vma->vm_ops = &vm_ops;
 	}
 
-	//hack to return physical address by putting it in the buffer
+	//The user needs the physical address for this buffer,
+	//so return it in the first 4 bytes.
+	//-- This is a pretty hacky solution
 	kvirt[0]=(void*)dma_handle;
-	pfn = (dma_handle) >> PAGE_SHIFT;
 
-	if( remap_pfn_range(vma, vma->vm_start, pfn, size,
+	//do the remap
+	pfn = (dma_handle) >> PAGE_SHIFT;
+	if( remap_pfn_range(vma, vma->vm_start, pfn, len,
 	                    vma->vm_page_prot)) {
 		printk(KERN_ERR
 		       "cma_mmap - failed to map the instruction memory\n");

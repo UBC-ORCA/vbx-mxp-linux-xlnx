@@ -614,4 +614,8 @@ config MXP
 	help
 	  The MXP driver is provides access to shared memory and accelerator registers
 
+config CM_ALLOCATOR
+	tristate "Contiguous memory allocator"
+	depends on CMA
+	default n
 endmenu
