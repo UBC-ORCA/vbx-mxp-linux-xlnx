@@ -9,13 +9,14 @@
 #include <linux/gfp.h>
 #include <linux/dma-mapping.h>
 #include <asm/uaccess.h>
+#include <linux/mman.h>
 #include <linux/mxp.h>
 
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
 MODULE_LICENSE("Proprietary");
 
-#define debug(var) printk(KERN_INFO "%s:%d  %s = %d \n",__FILE__,__LINE__,#var,(unsigned)(var))
+#define debug(var) printk(KERN_INFO "%s:%d  %s = %08X \n",__FILE__,__LINE__,#var,(unsigned)(var))
 
 
 
@@ -37,10 +38,11 @@ static int mxp_open(struct inode *, struct file *);
 static int mxp_mmap(struct file *, struct vm_area_struct *);
 static long mxp_ioctl(struct file *, unsigned int, unsigned long);
 static ssize_t mxp_read(struct file *, char __user *, size_t, loff_t *);
-
+static int mxp_release(struct inode *, struct file *);
 static struct file_operations mxp_fops = {
 	.owner = THIS_MODULE,
 	.open = mxp_open,
+	.release = mxp_release,
 	.mmap = mxp_mmap,
 	.read = mxp_read,
 	.unlocked_ioctl = mxp_ioctl
@@ -150,7 +152,12 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 static int mxp_open(struct inode *i, struct file *f)
 {
 	//don't do anything on open.
-	printk(KERN_INFO "device opened\n");
+	printk(KERN_INFO "\ndevice opened\n");
+	return 0;
+}
+static int mxp_release(struct inode * i , struct file * f)
+{
+	printk(KERN_INFO "device closed\n");
 	return 0;
 }
 static ssize_t mxp_read(struct file * f, char __user * b, size_t s, loff_t * o)
@@ -158,44 +165,83 @@ static ssize_t mxp_read(struct file * f, char __user * b, size_t s, loff_t * o)
 	return 0;
 }
 
-#define PAD_SIZE_TO_PAGE(sz) ((((sz)+(PAGE_SIZE-1)) >> PAGE_SHIFT)<<PAGE_SHIFT)
+
 struct shared_alloc_t{
 	size_t len; /*in/output */
 	void* phys; /*output*/
 	void* virt; /*output*/
 };
+int debug_mmap;
 static long mxp_ioctl_shared_alloc(struct shared_alloc_t* param_ptr)
 {
+
 	struct shared_alloc_t param;
 	dma_addr_t dma_handle;
-	int* virt;
+	int* kvirt=NULL;
 	size_t len;
 	int retval;
+	unsigned long populate;
+	struct mm_struct * mm = current->mm;
+	vm_flags_t vm_flags;
 	if(copy_from_user(&param,param_ptr,sizeof(param))){
 		retval = -EACCES;
 		goto err;
 	}
 
-	param.len=PAD_SIZE_TO_PAGE(param.len);
-
+	param.len=PAGE_ALIGN(param.len);
+	len=param.len;
 	//change this to not zero the memory... I think
-	virt=dma_zalloc_coherent(dev_mxp,param.len,&dma_handle,GFP_USER);
-	if(!virt){
+	kvirt=dma_zalloc_coherent(dev_mxp,len,&dma_handle,GFP_USER);
+	debug(dma_handle);
+	if(!kvirt){
 		retval=-ENOMEM;
 		goto err;
 	}
-	virt[0]=0xABCDEF;
-	debug(virt[0]);
-	param.virt=(void*)virt;
+	kvirt[0]=0xDEEDFEED;
+
+	{
+		unsigned long pgoff =dma_handle >> PAGE_SHIFT;
+		down_write(&current->mm->mmap_sem);
+#if 1
+		param.virt=kvirt;
+#elif 1
+		unsigned long flags=  MAP_PRIVATE|MAP_ANONYMOUS;
+		unsigned long prot = PROT_READ | PROT_WRITE;
+		vm_flags= (calc_vm_prot_bits(prot) | calc_vm_flag_bits(flags) |
+		           mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC);
+
+		unsigned long addr=get_unmapped_area(NULL,
+		                                     0,
+		                                     len,
+		                                     pgoff,
+		                                     flags);
+		debug(addr);
+		addr = mmap_region(NULL, addr, len, vm_flags, pgoff);
+		debug(addr);
+		param.virt=(void*)addr;
+#else
+		param.virt=(void*)do_mmap_pgoff(NULL,/*file*/
+		                                0,/*addr*/
+		                                len,
+		                                PROT_READ | PROT_WRITE,
+		                                MAP_PRIVATE|MAP_ANONYMOUS,
+		                                dma_handle,
+		                                &populate);
+#endif
+		up_write(&current->mm->mmap_sem);
+	}
+	debug(__pa(param.virt));
+	//virt now contains a userspace virtual address
 	param.phys=(void*)dma_handle;
 	if(copy_to_user(param_ptr,&param,sizeof(param))){
 		retval=-EACCES;
 		goto err;
 	}
+
 	return 0;
  err:
-	if(virt){
-		dma_free_coherent(dev_mxp,len, virt, dma_handle);
+	if(kvirt){
+		//	dma_free_coherent(dev_mxp,len, virt, dma_handle);
 	}
 	printk(KERN_ERR "MXP_IOCTL_SHARED_ALLOC - failed\n");
 	return retval;
@@ -207,18 +253,23 @@ static long mxp_ioctl(struct file * f, unsigned int cmd, unsigned long  param)
 	  unsigned long virt_addr, unsigned long pfn,
 	  unsigned long size, pgprot_t prot);*/
 	void* base_addr;
+	long retval;
 	switch(cmd){
 	case MXP_IOCTL_SP_BASE:
 		base_addr=(void*)SCRATCHPAD_BASEADDR;
-		return copy_to_user((void**)param,&base_addr,sizeof(void*)) ?
+		retval = copy_to_user((void**)param,&base_addr,sizeof(void*)) ?
 			-EACCES:0;
+		break;
 	case MXP_IOCTL_SHARED_ALLOC:
-		return mxp_ioctl_shared_alloc((struct shared_alloc_t*)param);
+		debug_mmap=1;
+		retval = mxp_ioctl_shared_alloc((struct shared_alloc_t*)param);
+		debug_mmap=0;
+		break;
 	default:
-		return -EINVAL;
+		retval = -EINVAL;
+		break;
 	}
-
-
+	return retval;
 }
 module_init(mxp_init);
 module_exit(mxp_cleanup);

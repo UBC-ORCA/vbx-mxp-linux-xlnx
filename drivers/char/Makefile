@@ -63,3 +63,4 @@ js-rtc-y = rtc.o
 
 obj-$(CONFIG_TILE_SROM)		+= tile-srom.o
 obj-$(CONFIG_MXP)		+= mxp.o
+obj-y		+= cma.o
