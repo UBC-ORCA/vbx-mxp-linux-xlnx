@@ -23,6 +23,7 @@
 
 struct vbx_mxp_t{
 	void* scratchpad_addr;
+	void* scratchpad_phys_addr;
 	size_t scratchpae_size;
 	size_t dma_alignement_bytes;
 	size_t scratchpad_alignement_bytes;
@@ -37,6 +38,7 @@ struct vbx_mxp_t{
 	void* instr_port_addr;
 };
 
-#define MXP_IOCTL_SP_BASE 1
-#define MXP_IOCTL_SP_SIZE 2
-#define MXP_IOCTL_SHARED_ALLOC 3
+enum mxp_ioctl_t{
+	GET_SP_BASE=1,
+	GET_SP_SIZE
+};

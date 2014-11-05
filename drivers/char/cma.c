@@ -11,7 +11,7 @@
 #include <asm/uaccess.h>
 #include <linux/mman.h>
 #include <linux/mxp.h>
-#include <linux/vmalloc.h>
+#include <linux/slab.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Device to mmap CMA");
 MODULE_LICENSE("Proprietary");
@@ -117,10 +117,10 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 	}else{
 		//since we have allocated memory, we should also free it eventually.
 		//to do this we register a callback in the vma to be called on munmap
-		pdat = kmalloc(sizeof(vm_private_data),GFP_KERNEL);
+		pdat = kmalloc(sizeof(struct vm_private_data),GFP_KERNEL);
 		if(pdat == NULL){
 			//we have issues!
-			dma_free_coherent(dev_cma,len,kvirt,dma_hadle);
+			dma_free_coherent(dev_cma,len,kvirt,dma_handle);
 			printk(KERN_ERR
 			       "cma_mmap - failed dma alloc\n");
 			return -ENOMEM;
