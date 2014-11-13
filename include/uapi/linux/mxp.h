@@ -20,25 +20,3 @@
 
 
 #define XPAR_VECTORBLOX_MXP_ARM_0_CLOCK_FREQ_HZ 100000000
-
-struct vbx_mxp_t{
-	void* scratchpad_addr;
-	void* scratchpad_phys_addr;
-	size_t scratchpae_size;
-	size_t dma_alignement_bytes;
-	size_t scratchpad_alignement_bytes;
-	size_t vector_lanes;
-	char vci_enabled;
-	size_t vci_lanes;
-	size_t mask_partitions;
-	size_t max_masked_vector_length;
-	uint8_t fxp_word_frac_bits;
-	uint8_t fxp_half_frac_bits;
-	uint8_t fxp_byte_frac_bits;
-	void* instr_port_addr;
-};
-
-enum mxp_ioctl_t{
-	GET_SP_BASE=1,
-	GET_SP_SIZE
-};

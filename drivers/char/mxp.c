@@ -11,7 +11,7 @@
 #include <asm/uaccess.h>
 #include <linux/mman.h>
 #include <linux/mxp.h>
-
+#include <linux/stringify.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
 MODULE_LICENSE("Proprietary");
@@ -23,6 +23,7 @@ MODULE_LICENSE("Proprietary");
 //scratchpad
 #define SCRATCHPAD_BASEADDR XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_BASEADDR
 #define SCRATCHPAD_HIGHADDR XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_HIGHADDR
+#define SCRATCHPAD_SIZE  XPAR_VECTORBLOX_MXP_ARM_0_SCRATCHPAD_KB *1024
 //instruction port
 #define INSTRUCTION_PORT  XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_INSTR_BASEADDR
 
@@ -32,21 +33,44 @@ MODULE_LICENSE("Proprietary");
 
 
 #define DRIVER_NAME "MXP"
-#define Driver_name "mxp"
+#define Driver_name "mxp0"
 //file operation functions
 static int mxp_open(struct inode *, struct file *);
 static int mxp_mmap(struct file *, struct vm_area_struct *);
-static long mxp_ioctl(struct file *, unsigned int, unsigned long);
-static ssize_t mxp_read(struct file *, char __user *, size_t, loff_t *);
 static int mxp_close(struct inode *, struct file *);
 static struct file_operations mxp_fops = {
 	.owner = THIS_MODULE,
 	.open = mxp_open,
 	.release = mxp_close,
 	.mmap = mxp_mmap,
-	.read = mxp_read,
-	.unlocked_ioctl = mxp_ioctl
 };
+
+//this magic creates static functions to read
+//attributes, they also have to be registered in the __init
+//function
+static ssize_t store_fake(struct device *dev, struct device_attribute *attr, const char *buf, size_t count){return 0;}
+#define MXP_READ_ATTR(name)	  \
+	static ssize_t show_mxp_##name(struct device *dev, struct device_attribute *attr,char *buf){ \
+		strcpy(buf,__stringify(XPAR_VECTORBLOX_MXP_ARM_0_##name)); \
+		return sizeof(__stringify(XPAR_VECTORBLOX_MXP_ARM_0_##name)); \
+	} \
+	static DEVICE_ATTR(name,0444,show_mxp_##name,store_fake)
+MXP_READ_ATTR(DEVICE_ID);
+MXP_READ_ATTR(S_AXI_BASEADDR);
+MXP_READ_ATTR(S_AXI_HIGHADDR);
+MXP_READ_ATTR(VECTOR_LANES);
+MXP_READ_ATTR(MAX_MASKED_WAVES);
+MXP_READ_ATTR(MASK_PARTITIONS);
+MXP_READ_ATTR(SCRATCHPAD_KB);
+MXP_READ_ATTR(M_AXI_DATA_WIDTH);
+MXP_READ_ATTR(MULFXP_WORD_FRACTION_BITS);
+MXP_READ_ATTR(MULFXP_HALF_FRACTION_BITS);
+MXP_READ_ATTR(MULFXP_BYTE_FRACTION_BITS);
+MXP_READ_ATTR(S_AXI_INSTR_BASEADDR);
+MXP_READ_ATTR(ENABLE_VCI);
+MXP_READ_ATTR(VCI_LANES);
+MXP_READ_ATTR(CLOCK_FREQ_HZ);
+
 
 //static variables
 static dev_t dev_no;
@@ -56,8 +80,6 @@ static struct device *dev_mxp;
 static int __init mxp_init(void)
 {
     int err;
-    printk(KERN_INFO "\n\n\n\n\n\n\nMXP INIT\n");
-
     err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
     if( err){
 	    printk(KERN_ERR "Failed to allocate device number\n");
@@ -83,6 +105,22 @@ static int __init mxp_init(void)
 	    return 1;
     }
     dev_mxp= device_create(class_mxp,NULL,dev_no,NULL, Driver_name );
+    device_create_file(dev_mxp,&dev_attr_DEVICE_ID);
+    device_create_file(dev_mxp,&dev_attr_S_AXI_BASEADDR);
+    device_create_file(dev_mxp,&dev_attr_S_AXI_HIGHADDR);
+    device_create_file(dev_mxp,&dev_attr_VECTOR_LANES);
+    device_create_file(dev_mxp,&dev_attr_MAX_MASKED_WAVES);
+    device_create_file(dev_mxp,&dev_attr_MASK_PARTITIONS);
+    device_create_file(dev_mxp,&dev_attr_SCRATCHPAD_KB);
+    device_create_file(dev_mxp,&dev_attr_M_AXI_DATA_WIDTH);
+    device_create_file(dev_mxp,&dev_attr_MULFXP_WORD_FRACTION_BITS);
+    device_create_file(dev_mxp,&dev_attr_MULFXP_HALF_FRACTION_BITS);
+    device_create_file(dev_mxp,&dev_attr_MULFXP_BYTE_FRACTION_BITS);
+    device_create_file(dev_mxp,&dev_attr_S_AXI_INSTR_BASEADDR);
+    device_create_file(dev_mxp,&dev_attr_ENABLE_VCI);
+    device_create_file(dev_mxp,&dev_attr_VCI_LANES);
+    device_create_file(dev_mxp,&dev_attr_CLOCK_FREQ_HZ);
+
     if(IS_ERR( dev_mxp)){
 	    printk(KERN_ERR "failed to create device\n");
 	    return 1;
@@ -97,9 +135,7 @@ static int __init mxp_init(void)
 	    return err;
     }
 
-
-
-    printk(KERN_INFO "MXP Driver Loaded\n");
+    printk(KERN_INFO "MXP module Loaded\n");
     return 0;    // Non-zero return means that the module couldn't be loaded.
 }
 
@@ -121,12 +157,11 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 	int pfn;
 	vma->vm_flags |= (VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-
-
+	printk(KERN_DEBUG "mxp mmap");
 	if(offset == 0 ){
 		//map the instruction port
 		printk(KERN_DEBUG "offset == 0 so mapping instruction port\n");
-		if( size > PAGE_SIZE ){
+		if( size != PAGE_SIZE ){
 			printk(KERN_ERR "Invalid size for mapping instruction port\n");
 			retval = -EINVAL;
 		}
@@ -135,64 +170,33 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 	else if(offset >=SCRATCHPAD_MMAP_OFFSET){
 		//map the scratchpad
 		printk(KERN_DEBUG "offset > %d(PAGE_SIZE) so mapping scratchpad\n",(int)PAGE_SIZE);
+
+		if(size> SCRATCHPAD_SIZE){
+			//resize to be smaller ... I think this works (test it)
+			printk(KERN_ERR "Invalid size for mapping scratchpad\n");
+			retval = -EINVAL;
+		}
 		pfn = (SCRATCHPAD_BASEADDR) >> PAGE_SHIFT;
 	}else{
 		//rats, foiled again.
 		printk(KERN_ERR "Invalid offset for mxp mmap\n");
 		retval=-EINVAL;
 	}
+
 	if (retval==0 && io_remap_pfn_range(vma, vma->vm_start, pfn, size,
 	                                    vma->vm_page_prot)) {
 		printk(KERN_ERR
-		       "mxp_mmap - failed to map the instruction memory\n");
+		       "mxp_mmap - failed\n");
 		retval = -EAGAIN;
 	}
+
 	return retval;
 }
 static int mxp_open(struct inode *i, struct file *f)
-{
-	//don't do anything on open.
-	printk(KERN_INFO "\ndevice opened\n");
-	return 0;
-}
+{return 0;}
 static int mxp_close(struct inode * i , struct file * f)
-{
-	printk(KERN_INFO "device closed\n");
-	return 0;
-}
-static ssize_t mxp_read(struct file * f, char __user * b, size_t s, loff_t * o)
-{
-	return 0;
-}
+{return 0;}
 
 
-struct shared_alloc_t{
-	size_t len; /*in/output */
-	void* phys; /*output*/
-	void* virt; /*output*/
-};
-int debug_mmap;
-
-static long mxp_ioctl(struct file * f, unsigned int cmd, unsigned long  param)
-{
-	/*int remap_pfn_range(struct vm_area_struct *vma,
-	  unsigned long virt_addr, unsigned long pfn,
-	  unsigned long size, pgprot_t prot);*/
-	void* base_addr;
-	long retval;
-	enum mxp_ioctl_t command=cmd;
-	switch(command){
-	case GET_SP_BASE:
-		base_addr=(void*)SCRATCHPAD_BASEADDR;
-		retval = copy_to_user((void**)param,&base_addr,sizeof(void*)) ?
-			-EACCES:0;
-		break;
-	case GET_SP_SIZE:
-	default:
-		retval = -EINVAL;
-		break;
-	}
-	return retval;
-}
 module_init(mxp_init);
 module_exit(mxp_cleanup);
