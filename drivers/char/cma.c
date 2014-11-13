@@ -37,7 +37,6 @@ static struct device *dev_cma;
 static int __init cma_init(void)
 {
     int err;
-    printk(KERN_INFO "\n\n\n\n\n\n\nCMA INIT\n");
 
     err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
     if( err){
@@ -77,7 +76,7 @@ static int __init cma_init(void)
 	    printk(KERN_ERR "FAILED set mask\n");
 	    return err;
     }
-
+    printk(KERN_INFO "CMA module loaded");
     return 0;    // Non-zero return means that the module couldn't be loaded.
 }
 struct vm_private_data{
@@ -133,21 +132,18 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 		vma->vm_private_data = pdat;
 		vma->vm_ops = &vm_ops;
 	}
-
 	//The user needs the physical address for this buffer,
 	//so return it in the first 4 bytes.
 	//-- This is a pretty hacky solution
 	kvirt[0]=(void*)dma_handle;
-
 	//do the remap
 	pfn = (dma_handle) >> PAGE_SHIFT;
-	if( remap_pfn_range(vma, vma->vm_start, pfn, len,
-	                    vma->vm_page_prot)) {
+	if( io_remap_pfn_range(vma, vma->vm_start, pfn, len,
+	                       vma->vm_page_prot)) {
 		printk(KERN_ERR
 		       "cma_mmap - failed to map the instruction memory\n");
 		retval = -EAGAIN;
 	}
-
 	return retval;
 }
 static int cma_open(struct inode *i, struct file *f){return 0;}
