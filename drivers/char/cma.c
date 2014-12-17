@@ -104,7 +104,7 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 	struct vm_private_data* pdat;
 	len =vma->vm_end - vma->vm_start;
 	vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	vma->vm_page_prot = pgprot_dmacoherent(vma->vm_page_prot);
 
 	//because this buffer is about to be used by userspace, it is
 	//important for it to be sanitized, so use zalloc
@@ -141,9 +141,10 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 	if( io_remap_pfn_range(vma, vma->vm_start, pfn, len,
 	                       vma->vm_page_prot)) {
 		printk(KERN_ERR
-		       "cma_mmap - failed to map the instruction memory\n");
+		       "cma_mmap - failed to map the memory\n");
 		retval = -EAGAIN;
 	}
+	printk(KERN_DEBUG "cma_mmap : mmap virtual=%p  physical=%p\n",kvirt,(void*)dma_handle);
 	return retval;
 }
 static int cma_open(struct inode *i, struct file *f){return 0;}

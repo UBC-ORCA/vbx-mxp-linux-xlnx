@@ -70,7 +70,7 @@ MXP_READ_ATTR(S_AXI_INSTR_BASEADDR);
 MXP_READ_ATTR(ENABLE_VCI);
 MXP_READ_ATTR(VCI_LANES);
 MXP_READ_ATTR(CLOCK_FREQ_HZ);
-
+#undef MXP_READ_ATTR
 
 //static variables
 static dev_t dev_no;
@@ -158,6 +158,8 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 	vma->vm_flags |= (VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	printk(KERN_DEBUG "mxp mmap");
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
 	if(offset == 0 ){
 		//map the instruction port
 		printk(KERN_DEBUG "offset == 0 so mapping instruction port\n");
@@ -166,6 +168,7 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 			retval = -EINVAL;
 		}
 		pfn = (INSTRUCTION_PORT) >> PAGE_SHIFT;
+
 	}
 	else if(offset >=SCRATCHPAD_MMAP_OFFSET){
 		//map the scratchpad
@@ -182,7 +185,6 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 		printk(KERN_ERR "Invalid offset for mxp mmap\n");
 		retval=-EINVAL;
 	}
-
 	if (retval==0 && io_remap_pfn_range(vma, vma->vm_start, pfn, size,
 	                                    vma->vm_page_prot)) {
 		printk(KERN_ERR
