@@ -14,7 +14,7 @@
 #include <linux/stringify.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 
 #define debug(var) printk(KERN_INFO "%s:%d  %s = %08X \n",__FILE__,__LINE__,#var,(unsigned)(var))
 

@@ -14,7 +14,7 @@
 #include <linux/slab.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Device to mmap CMA");
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 
 #define DRIVER_NAME "CMA"
 #define Driver_name "cma"
