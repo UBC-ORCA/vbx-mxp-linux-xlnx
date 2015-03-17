@@ -12,6 +12,8 @@
 #include <linux/mman.h>
 #include <linux/mxp.h>
 #include <linux/stringify.h>
+#include <linux/of_device.h>
+
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
 MODULE_LICENSE("GPL");
@@ -77,9 +79,11 @@ static dev_t dev_no;
 static struct cdev *mxp_cdev = NULL;
 static struct class *class_mxp;
 static struct device *dev_mxp;
-static int __init mxp_init(void)
+
+static int mxp_of_probe(struct platform_device* pdev)
 {
     int err;
+	printk(KERN_ERR "mxp_probe\n");
     err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
     if( err){
 	    printk(KERN_ERR "Failed to allocate device number\n");
@@ -199,6 +203,27 @@ static int mxp_open(struct inode *i, struct file *f)
 static int mxp_close(struct inode * i , struct file * f)
 {return 0;}
 
+static struct of_device_id vectorblox_of_match[]  = {
+	{ .compatible = "vectorblox.com,vectorblox-mxp-1.0",},
+  {}
+};
+
+MODULE_DEVICE_TABLE(of, vectorblox_of_match);
+
+static struct platform_driver vectorblox_mxp_driver = {
+	.probe=mxp_of_probe,
+	.driver={
+		.owner = THIS_MODULE,
+		.name = "vectorblox-mxp",
+		.of_match_table = vectorblox_of_match,
+	},
+};
+
+static int __init mxp_init(void){
+	printk(KERN_ERR "mxp_init\n");
+
+	return platform_driver_register(&vectorblox_mxp_driver);
+}
 
 module_init(mxp_init);
 module_exit(mxp_cleanup);
