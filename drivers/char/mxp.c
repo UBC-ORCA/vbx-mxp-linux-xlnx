@@ -13,13 +13,14 @@
 #include <linux/mxp.h>
 #include <linux/stringify.h>
 #include <linux/of_device.h>
+#include <linux/of_address.h>
 
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
 MODULE_LICENSE("GPL");
 
 #define debug(var) printk(KERN_INFO "%s:%d  %s = %08X \n",__FILE__,__LINE__,#var,(unsigned)(var))
-
+#define debugx(var) printk(KERN_INFO "%s:0x%X  %s = %08X \n",__FILE__,__LINE__,#var,(unsigned)(var))
 
 
 //scratchpad
@@ -79,75 +80,104 @@ static dev_t dev_no;
 static struct cdev *mxp_cdev = NULL;
 static struct class *class_mxp;
 static struct device *dev_mxp;
-
+static struct resource scratchpad;
+static struct resource instr_port;
+static int enable_vci;
+static int get_of_parameter(const struct device_node *np,char* name,int* value)
+{
+	void* ptr=of_get_property(np, name , NULL);
+	if(!ptr){
+		return -1;
+	}
+	//convert from big endian to cpu endianness
+	*value=be32_to_cpup(ptr);
+	return 0;
+}
 static int mxp_of_probe(struct platform_device* pdev)
 {
-    int err;
+	int err;
+	int rc = 0;
+	void *registers;
 	printk(KERN_ERR "mxp_probe\n");
-    err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
-    if( err){
-	    printk(KERN_ERR "Failed to allocate device number\n");
-	    return err;
-    }
 
-    mxp_cdev = cdev_alloc();
-    if( !mxp_cdev ){
-	    printk(KERN_ERR "Failed to allocate cdev\n");
-	    return 1;
-    }
-    mxp_cdev->ops = & mxp_fops;
-    mxp_cdev->owner = THIS_MODULE;
-    err = cdev_add(mxp_cdev,dev_no,1 );
-    if (err < 0){
-	    printk(KERN_ERR "Failed to add cdev\n");
-	    return err;
-    }
+	//Parse device tree nodes
+	rc = of_address_to_resource(pdev->dev.of_node, 0, &scratchpad);
+	if  (rc || !request_mem_region(scratchpad.start, resource_size(&scratchpad), "xillybus")) {
+			printk(KERN_ERR "Failed to reserve scratchpad address range\n");
+	}
+	rc = of_address_to_resource(pdev->dev.of_node, 1, &instr_port);
+	if  (rc || !request_mem_region(instr_port.start, resource_size(&instr_port), "xillybus")) {
+			printk(KERN_ERR "Failed to reserve instr_port address range\n");
+	}
+	if(!get_of_parameter(pdev->dev.of_node,"vectorblox,enable-vci",&enable_vci)){
+		printk(KERN_ERR "Failed to read 'enable-vci' parameter\n");
+	}
+	debug(enable_vci);
+	//create character_device
+	err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
+	if( err){
+		printk(KERN_ERR "Failed to allocate device number\n");
+		return err;
+	}
 
-    class_mxp = class_create(THIS_MODULE, DRIVER_NAME);
-    if(IS_ERR( class_mxp)){
-	    printk(KERN_ERR "Failed to create class\n");
-	    return 1;
-    }
-    dev_mxp= device_create(class_mxp,NULL,dev_no,NULL, Driver_name );
-    device_create_file(dev_mxp,&dev_attr_DEVICE_ID);
-    device_create_file(dev_mxp,&dev_attr_S_AXI_BASEADDR);
-    device_create_file(dev_mxp,&dev_attr_S_AXI_HIGHADDR);
-    device_create_file(dev_mxp,&dev_attr_VECTOR_LANES);
-    device_create_file(dev_mxp,&dev_attr_MAX_MASKED_WAVES);
-    device_create_file(dev_mxp,&dev_attr_MASK_PARTITIONS);
-    device_create_file(dev_mxp,&dev_attr_SCRATCHPAD_KB);
-    device_create_file(dev_mxp,&dev_attr_M_AXI_DATA_WIDTH);
-    device_create_file(dev_mxp,&dev_attr_MULFXP_WORD_FRACTION_BITS);
-    device_create_file(dev_mxp,&dev_attr_MULFXP_HALF_FRACTION_BITS);
-    device_create_file(dev_mxp,&dev_attr_MULFXP_BYTE_FRACTION_BITS);
-    device_create_file(dev_mxp,&dev_attr_S_AXI_INSTR_BASEADDR);
-    device_create_file(dev_mxp,&dev_attr_ENABLE_VCI);
-    device_create_file(dev_mxp,&dev_attr_VCI_LANES);
-    device_create_file(dev_mxp,&dev_attr_CLOCK_FREQ_HZ);
+	mxp_cdev = cdev_alloc();
+	if( !mxp_cdev ){
+		printk(KERN_ERR "Failed to allocate cdev\n");
+		return 1;
+	}
+	mxp_cdev->ops = & mxp_fops;
+	mxp_cdev->owner = THIS_MODULE;
+	err = cdev_add(mxp_cdev,dev_no,1 );
+	if (err < 0){
+		printk(KERN_ERR "Failed to add cdev\n");
+		return err;
+	}
 
-    if(IS_ERR( dev_mxp)){
-	    printk(KERN_ERR "failed to create device\n");
-	    return 1;
-    }
+	class_mxp = class_create(THIS_MODULE, DRIVER_NAME);
+	if(IS_ERR( class_mxp)){
+		printk(KERN_ERR "Failed to create class\n");
+		return 1;
+	}
+	dev_mxp= device_create(class_mxp,NULL,dev_no,NULL, Driver_name );
+	device_create_file(dev_mxp,&dev_attr_DEVICE_ID);
+	device_create_file(dev_mxp,&dev_attr_S_AXI_BASEADDR);
+	device_create_file(dev_mxp,&dev_attr_S_AXI_HIGHADDR);
+	device_create_file(dev_mxp,&dev_attr_VECTOR_LANES);
+	device_create_file(dev_mxp,&dev_attr_MAX_MASKED_WAVES);
+	device_create_file(dev_mxp,&dev_attr_MASK_PARTITIONS);
+	device_create_file(dev_mxp,&dev_attr_SCRATCHPAD_KB);
+	device_create_file(dev_mxp,&dev_attr_M_AXI_DATA_WIDTH);
+	device_create_file(dev_mxp,&dev_attr_MULFXP_WORD_FRACTION_BITS);
+	device_create_file(dev_mxp,&dev_attr_MULFXP_HALF_FRACTION_BITS);
+	device_create_file(dev_mxp,&dev_attr_MULFXP_BYTE_FRACTION_BITS);
+	device_create_file(dev_mxp,&dev_attr_S_AXI_INSTR_BASEADDR);
+	device_create_file(dev_mxp,&dev_attr_ENABLE_VCI);
+	device_create_file(dev_mxp,&dev_attr_VCI_LANES);
+	device_create_file(dev_mxp,&dev_attr_CLOCK_FREQ_HZ);
 
-    //in order to use dma_alloc_coherent, we must set the mask
-    //for valid dma bus addresses. The mxp can use all 32 bits,
-    //so that is the mask. If the dma engine could only address
-    //the bottom 2^24 addresses, then that would be the mask
-    if((err=dma_set_coherent_mask(dev_mxp,DMA_BIT_MASK(32)) )){
-	    printk(KERN_ERR "FAILED set mask\n");
-	    return err;
-    }
+	if(IS_ERR( dev_mxp)){
+		printk(KERN_ERR "failed to create device\n");
+		return 1;
+	}
 
-    printk(KERN_INFO "MXP module Loaded\n");
-    return 0;    // Non-zero return means that the module couldn't be loaded.
+	//in order to use dma_alloc_coherent, we must set the mask
+	//for valid dma bus addresses. The mxp can use all 32 bits,
+	//so that is the mask. If the dma engine could only address
+	//the bottom 2^24 addresses, then that would be the mask
+	if((err=dma_set_coherent_mask(dev_mxp,DMA_BIT_MASK(32)) )){
+		printk(KERN_ERR "FAILED set mask\n");
+		return err;
+	}
+
+	printk(KERN_INFO "MXP module Loaded\n");
+	return 0;    // Non-zero return means that the module couldn't be loaded.
 }
 
 static void __exit mxp_cleanup(void)
 {
-    printk(KERN_INFO "Cleaning up module.\n");
-    cdev_del(mxp_cdev);
-    unregister_chrdev_region(dev_no, 1);
+	printk(KERN_INFO "Cleaning up module.\n");
+	cdev_del(mxp_cdev);
+	unregister_chrdev_region(dev_no, 1);
 }
 
 //map the instruction port if offset is zero,
@@ -205,7 +235,7 @@ static int mxp_close(struct inode * i , struct file * f)
 
 static struct of_device_id vectorblox_of_match[]  = {
 	{ .compatible = "vectorblox.com,vectorblox-mxp-1.0",},
-  {}
+	{}
 };
 
 MODULE_DEVICE_TABLE(of, vectorblox_of_match);
