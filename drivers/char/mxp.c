@@ -10,10 +10,11 @@
 #include <linux/dma-mapping.h>
 #include <asm/uaccess.h>
 #include <linux/mman.h>
-#include <linux/mxp.h>
 #include <linux/stringify.h>
+#include <linux/ctype.h>
 #include <linux/of_device.h>
 #include <linux/of_address.h>
+#include <linux/of.h>
 
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Vectorblox MXP Driver");
@@ -24,11 +25,6 @@ MODULE_LICENSE("GPL");
 
 
 //scratchpad
-#define SCRATCHPAD_BASEADDR XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_BASEADDR
-#define SCRATCHPAD_HIGHADDR XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_HIGHADDR
-#define SCRATCHPAD_SIZE  XPAR_VECTORBLOX_MXP_ARM_0_SCRATCHPAD_KB *1024
-//instruction port
-#define INSTRUCTION_PORT  XPAR_VECTORBLOX_MXP_ARM_0_S_AXI_INSTR_BASEADDR
 
 #define SCRATCHPAD_MMAP_OFFSET  PAGE_SIZE
 
@@ -48,71 +44,75 @@ static struct file_operations mxp_fops = {
 	.mmap = mxp_mmap,
 };
 
-//this magic creates static functions to read
-//attributes, they also have to be registered in the __init
-//function
-static ssize_t store_fake(struct device *dev, struct device_attribute *attr, const char *buf, size_t count){return 0;}
-#define MXP_READ_ATTR(name)	  \
-	static ssize_t show_mxp_##name(struct device *dev, struct device_attribute *attr,char *buf){ \
-		strcpy(buf,__stringify(XPAR_VECTORBLOX_MXP_ARM_0_##name)); \
-		return sizeof(__stringify(XPAR_VECTORBLOX_MXP_ARM_0_##name)); \
-	} \
-	static DEVICE_ATTR(name,0444,show_mxp_##name,store_fake)
-MXP_READ_ATTR(DEVICE_ID);
-MXP_READ_ATTR(S_AXI_BASEADDR);
-MXP_READ_ATTR(S_AXI_HIGHADDR);
-MXP_READ_ATTR(VECTOR_LANES);
-MXP_READ_ATTR(MAX_MASKED_WAVES);
-MXP_READ_ATTR(MASK_PARTITIONS);
-MXP_READ_ATTR(SCRATCHPAD_KB);
-MXP_READ_ATTR(M_AXI_DATA_WIDTH);
-MXP_READ_ATTR(MULFXP_WORD_FRACTION_BITS);
-MXP_READ_ATTR(MULFXP_HALF_FRACTION_BITS);
-MXP_READ_ATTR(MULFXP_BYTE_FRACTION_BITS);
-MXP_READ_ATTR(S_AXI_INSTR_BASEADDR);
-MXP_READ_ATTR(ENABLE_VCI);
-MXP_READ_ATTR(VCI_LANES);
-MXP_READ_ATTR(CLOCK_FREQ_HZ);
-#undef MXP_READ_ATTR
 
 //static variables
 static dev_t dev_no;
 static struct cdev *mxp_cdev = NULL;
 static struct class *class_mxp;
 static struct device *dev_mxp;
-static struct resource scratchpad;
-static struct resource instr_port;
-static int enable_vci;
-static int get_of_parameter(const struct device_node *np,char* name,int* value)
+static struct resource scratchpad_rsc;
+static struct resource instr_port_rsc;
+
+
+//space to store a maximum of 32 attributes
+//each with a maximum name length of 32
+#define ATTRIBUTE_NAME_LEN 32
+#define MAX_ATTRIBUTES 320
+
+struct mxp_device_attribute{
+	struct device_attribute dev_attr;
+	char name[ATTRIBUTE_NAME_LEN];
+	int value;
+};
+static struct mxp_device_attribute mxp_attributes[MAX_ATTRIBUTES];
+
+static ssize_t show_mxp_attr(struct device *dev, struct device_attribute *attr,char *buf)
 {
-	void* ptr=of_get_property(np, name , NULL);
-	if(!ptr){
-		return -1;
+	int i;
+	int val=-1;
+	for(i=0;i<PAGE_SIZE;i++){
+		buf[i]=0;
 	}
-	//convert from big endian to cpu endianness
-	*value=be32_to_cpup(ptr);
-	return 0;
+	for(i=0;i<MAX_ATTRIBUTES;i++){
+		if(0==strncmp(mxp_attributes[i].name,attr->attr.name,ATTRIBUTE_NAME_LEN)){
+			val=mxp_attributes[i].value;
+			break;
+		}
+	}
+	sprintf(buf,"0x%x",val);
+	return strlen(buf)+1;
 }
+#define DT_PROP_PREFIX "vblx,"
 static int mxp_of_probe(struct platform_device* pdev)
 {
 	int err;
 	int rc = 0;
-	void *registers;
+	int i=0;
+	char c;
+	struct device_node* dnode=pdev->dev.of_node;
+	struct property* pp;
 	printk(KERN_ERR "mxp_probe\n");
 
 	//Parse device tree nodes
-	rc = of_address_to_resource(pdev->dev.of_node, 0, &scratchpad);
-	if  (rc || !request_mem_region(scratchpad.start, resource_size(&scratchpad), "xillybus")) {
+	rc = of_address_to_resource(dnode, 1, &scratchpad_rsc);
+	if  (rc || !request_mem_region(scratchpad_rsc.start,
+	                               resource_size(&scratchpad_rsc),
+	                               Driver_name)) {
 			printk(KERN_ERR "Failed to reserve scratchpad address range\n");
 	}
-	rc = of_address_to_resource(pdev->dev.of_node, 1, &instr_port);
-	if  (rc || !request_mem_region(instr_port.start, resource_size(&instr_port), "xillybus")) {
+	rc = of_address_to_resource(dnode, 0, &instr_port_rsc);
+
+	if  (rc || !request_mem_region(instr_port_rsc.start,
+	                               resource_size(&instr_port_rsc),
+	                               Driver_name)) {
 			printk(KERN_ERR "Failed to reserve instr_port address range\n");
 	}
-	if(!get_of_parameter(pdev->dev.of_node,"vectorblox,enable-vci",&enable_vci)){
-		printk(KERN_ERR "Failed to read 'enable-vci' parameter\n");
-	}
-	debug(enable_vci);
+	printk(KERN_ERR "scratchpad (%p,%p) %x\n",
+	       scratchpad_rsc.start,scratchpad_rsc.end,resource_size(&scratchpad_rsc));
+
+	printk(KERN_ERR "instr_port (%p,%p) %x\n",
+	       instr_port_rsc.start,instr_port_rsc.end,resource_size(&instr_port_rsc));
+
 	//create character_device
 	err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
 	if( err){
@@ -139,21 +139,35 @@ static int mxp_of_probe(struct platform_device* pdev)
 		return 1;
 	}
 	dev_mxp= device_create(class_mxp,NULL,dev_no,NULL, Driver_name );
-	device_create_file(dev_mxp,&dev_attr_DEVICE_ID);
-	device_create_file(dev_mxp,&dev_attr_S_AXI_BASEADDR);
-	device_create_file(dev_mxp,&dev_attr_S_AXI_HIGHADDR);
-	device_create_file(dev_mxp,&dev_attr_VECTOR_LANES);
-	device_create_file(dev_mxp,&dev_attr_MAX_MASKED_WAVES);
-	device_create_file(dev_mxp,&dev_attr_MASK_PARTITIONS);
-	device_create_file(dev_mxp,&dev_attr_SCRATCHPAD_KB);
-	device_create_file(dev_mxp,&dev_attr_M_AXI_DATA_WIDTH);
-	device_create_file(dev_mxp,&dev_attr_MULFXP_WORD_FRACTION_BITS);
-	device_create_file(dev_mxp,&dev_attr_MULFXP_HALF_FRACTION_BITS);
-	device_create_file(dev_mxp,&dev_attr_MULFXP_BYTE_FRACTION_BITS);
-	device_create_file(dev_mxp,&dev_attr_S_AXI_INSTR_BASEADDR);
-	device_create_file(dev_mxp,&dev_attr_ENABLE_VCI);
-	device_create_file(dev_mxp,&dev_attr_VCI_LANES);
-	device_create_file(dev_mxp,&dev_attr_CLOCK_FREQ_HZ);
+
+	for_each_property_of_node(dnode, pp){
+		const char* p_name=pp->name;
+		char* cptr;
+		int p_val=be32_to_cpup(pp->value);
+		struct device_attribute *dev_attr=&mxp_attributes[i].dev_attr;
+		printk(KERN_ERR "MXP PARAMETER %s=0x%x\n",p_name,p_val);
+		//ignore the property if it doesn't begin with the DT_PROP_PREFIX
+		if(strstr(p_name,DT_PROP_PREFIX)!=p_name)
+			continue;
+		//copy, then convert to uppercase, skip prefix
+		cptr=p_name+sizeof(DT_PROP_PREFIX)-1;
+		strncpy(mxp_attributes[i].name,cptr,ATTRIBUTE_NAME_LEN);
+		cptr=mxp_attributes[i].name;
+
+		do{
+			*cptr=toupper(*cptr);
+		}while(*cptr++);
+
+		dev_attr->attr.name=mxp_attributes[i].name;
+		dev_attr->attr.mode=0444;
+		dev_attr->show=show_mxp_attr;
+		dev_attr->store=NULL;
+
+		mxp_attributes[i].value=p_val;
+		device_create_file(dev_mxp,dev_attr);
+		i++;
+	}
+
 
 	if(IS_ERR( dev_mxp)){
 		printk(KERN_ERR "failed to create device\n");
@@ -201,19 +215,19 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 			printk(KERN_ERR "Invalid size for mapping instruction port\n");
 			retval = -EINVAL;
 		}
-		pfn = (INSTRUCTION_PORT) >> PAGE_SHIFT;
+		pfn = (instr_port_rsc.start) >> PAGE_SHIFT;
 
 	}
-	else if(offset >=SCRATCHPAD_MMAP_OFFSET){
+	else if(offset ==SCRATCHPAD_MMAP_OFFSET){
 		//map the scratchpad
-		printk(KERN_DEBUG "offset > %d(PAGE_SIZE) so mapping scratchpad\n",(int)PAGE_SIZE);
+		printk(KERN_DEBUG "offset == %d(PAGE_SIZE) so mapping scratchpad\n",(int)PAGE_SIZE);
 
-		if(size> SCRATCHPAD_SIZE){
+		if(size != resource_size(&scratchpad_rsc)){
 			//resize to be smaller ... I think this works (test it)
-			printk(KERN_ERR "Invalid size for mapping scratchpad\n");
+			printk(KERN_ERR "Invalid size for mapping scratchpad must be %d bytes\n",resource_size(&scratchpad_rsc));
 			retval = -EINVAL;
 		}
-		pfn = (SCRATCHPAD_BASEADDR) >> PAGE_SHIFT;
+		pfn = (scratchpad_rsc.start) >> PAGE_SHIFT;
 	}else{
 		//rats, foiled again.
 		printk(KERN_ERR "Invalid offset for mxp mmap\n");
@@ -224,6 +238,9 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 		printk(KERN_ERR
 		       "mxp_mmap - failed\n");
 		retval = -EAGAIN;
+	}else{
+		printk(KERN_INFO "mmap Success mapped virt=%p phys=%p len=%d\n",
+		       vma->vm_start,pfn<<PAGE_SHIFT,size);
 	}
 
 	return retval;
