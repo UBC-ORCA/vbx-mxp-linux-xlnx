@@ -88,7 +88,6 @@ static int mxp_of_probe(struct platform_device* pdev)
 	int err;
 	int rc = 0;
 	int i=0;
-	char c;
 	struct device_node* dnode=pdev->dev.of_node;
 	struct property* pp;
 	printk(KERN_ERR "mxp_probe\n");
@@ -107,11 +106,6 @@ static int mxp_of_probe(struct platform_device* pdev)
 	                               Driver_name)) {
 			printk(KERN_ERR "Failed to reserve instr_port address range\n");
 	}
-	printk(KERN_ERR "scratchpad (%p,%p) %x\n",
-	       scratchpad_rsc.start,scratchpad_rsc.end,resource_size(&scratchpad_rsc));
-
-	printk(KERN_ERR "instr_port (%p,%p) %x\n",
-	       instr_port_rsc.start,instr_port_rsc.end,resource_size(&instr_port_rsc));
 
 	//create character_device
 	err=alloc_chrdev_region(&dev_no,0,1,DRIVER_NAME);
@@ -145,12 +139,11 @@ static int mxp_of_probe(struct platform_device* pdev)
 		char* cptr;
 		int p_val=be32_to_cpup(pp->value);
 		struct device_attribute *dev_attr=&mxp_attributes[i].dev_attr;
-		printk(KERN_ERR "MXP PARAMETER %s=0x%x\n",p_name,p_val);
 		//ignore the property if it doesn't begin with the DT_PROP_PREFIX
 		if(strstr(p_name,DT_PROP_PREFIX)!=p_name)
 			continue;
 		//copy, then convert to uppercase, skip prefix
-		cptr=p_name+sizeof(DT_PROP_PREFIX)-1;
+		cptr=(char*)p_name+sizeof(DT_PROP_PREFIX)-1;
 		strncpy(mxp_attributes[i].name,cptr,ATTRIBUTE_NAME_LEN);
 		cptr=mxp_attributes[i].name;
 
@@ -206,7 +199,6 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 	vma->vm_flags |= (VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	printk(KERN_DEBUG "mxp mmap");
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
 	if(offset == 0 ){
 		//map the instruction port
@@ -238,9 +230,6 @@ static int mxp_mmap(struct file * f, struct vm_area_struct *vma)
 		printk(KERN_ERR
 		       "mxp_mmap - failed\n");
 		retval = -EAGAIN;
-	}else{
-		printk(KERN_INFO "mmap Success mapped virt=%p phys=%p len=%d\n",
-		       vma->vm_start,pfn<<PAGE_SHIFT,size);
 	}
 
 	return retval;
