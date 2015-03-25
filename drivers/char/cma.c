@@ -78,7 +78,9 @@ static int __init cma_init(void)
     printk(KERN_INFO "CMA module loaded");
     return 0;    // Non-zero return means that the module couldn't be loaded.
 }
+#define CMA_PDAT_MAGIC_NUMBER 0xCD679812
 struct vm_private_data{
+	int magic_number;
 	void* virt;
 	dma_addr_t dma_handle;
 	size_t len;
@@ -93,13 +95,21 @@ static void vm_free(struct vm_area_struct * vma)
 static struct vm_operations_struct vm_ops ={
 	.close = vm_free
 };
-static unsigned long get_phys_via_vma(unsigned long start )
+static phys_addr_t get_phys_via_vma(unsigned long start )
 {
 	struct vm_area_struct *vma = find_vma( current->mm, start);
+
 	if(vma){
+		struct vm_private_data *pdat = vma->vm_private_data;
+		if(pdat && pdat->magic_number==CMA_PDAT_MAGIC_NUMBER){
+			return pdat->dma_handle;
+		}else{
+			printk(KERN_ERR "Invalid vma found for remapping to cached\n");
+			return 0;
+		}
 		return vma->vm_pgoff<<PAGE_SHIFT;
 	}else{
-		printk(KERN_ERR "no vma found\n");
+		printk(KERN_ERR "No vma found for remapping to cached\n");
 		return 0;
 	}
 }
@@ -107,7 +117,6 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 {
 
 	int retval=0;
-
 	void** kvirt;
 	size_t len;
 	struct vm_private_data* pdat;
@@ -115,11 +124,13 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 	phys_addr_t phys_addr;
 	len =vma->vm_end - vma->vm_start;
 	if(offset!=0){
+
 		//since offset is not zero, we know we are doing a remap,
 		//as uncached, so simply clear the pgoff and set the phys_addr
-
+		if(!(phys_addr=get_phys_via_vma(offset))){
+			return -EINVAL;
+		}
 		vma->vm_pgoff=0;
-		phys_addr=offset;
 	}else{
 		dma_addr_t dma_handle;
 		vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
@@ -145,6 +156,7 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 			return -ENOMEM;
 
 		}
+		pdat->magic_number = CMA_PDAT_MAGIC_NUMBER;
 		pdat->virt = kvirt;
 		pdat->dma_handle = dma_handle;
 		pdat->len = len;
