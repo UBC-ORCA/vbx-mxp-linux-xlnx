@@ -10,7 +10,6 @@
 #include <linux/dma-mapping.h>
 #include <asm/uaccess.h>
 #include <linux/mman.h>
-#include <linux/mxp.h>
 #include <linux/slab.h>
 MODULE_AUTHOR("Joel Vandergriendt");
 MODULE_DESCRIPTION("Device to mmap CMA");
@@ -94,31 +93,52 @@ static void vm_free(struct vm_area_struct * vma)
 static struct vm_operations_struct vm_ops ={
 	.close = vm_free
 };
+static unsigned long get_phys_via_vma(unsigned long start )
+{
+	struct vm_area_struct *vma = find_vma( current->mm, start);
+	if(vma){
+		return vma->vm_pgoff<<PAGE_SHIFT;
+	}else{
+		printk(KERN_ERR "no vma found\n");
+		return 0;
+	}
+}
 static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 {
+
 	int retval=0;
-	int pfn;
-	dma_addr_t dma_handle;
+
 	void** kvirt;
 	size_t len;
 	struct vm_private_data* pdat;
+	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
+	phys_addr_t phys_addr;
 	len =vma->vm_end - vma->vm_start;
-	vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
-	vma->vm_page_prot = pgprot_dmacoherent(vma->vm_page_prot);
+	if(offset!=0){
+		//since offset is not zero, we know we are doing a remap,
+		//as uncached, so simply clear the pgoff and set the phys_addr
 
-	//because this buffer is about to be used by userspace, it is
-	//important for it to be sanitized, so use zalloc
-	kvirt=dma_zalloc_coherent(dev_cma,len,&dma_handle,GFP_USER);
-	if(kvirt == NULL ){
-		printk(KERN_ERR
-		       "cma_mmap - failed dma alloc\n");
-		return -ENOMEM;
+		vma->vm_pgoff=0;
+		phys_addr=offset;
 	}else{
+		dma_addr_t dma_handle;
+		vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
+		vma->vm_page_prot = pgprot_dmacoherent(vma->vm_page_prot);
+
+		//Allocate some physically contiguous memory.
+		//Because this buffer is about to be used by userspace, it is
+		//important for it to be sanitized, so use zalloc
+		kvirt=dma_zalloc_coherent(dev_cma,len,&dma_handle,GFP_USER);
+		if(kvirt == NULL ){
+			printk(KERN_ERR
+			       "cma_mmap - failed dma alloc\n");
+			return -ENOMEM;
+		}
 		//since we have allocated memory, we should also free it eventually.
 		//to do this we register a callback in the vma to be called on munmap
 		pdat = kmalloc(sizeof(struct vm_private_data),GFP_KERNEL);
 		if(pdat == NULL){
-			//we have issues!
+			//we have issues,clean up and return
 			dma_free_coherent(dev_cma,len,kvirt,dma_handle);
 			printk(KERN_ERR
 			       "cma_mmap - failed dma alloc\n");
@@ -131,20 +151,20 @@ static int cma_mmap(struct file * f, struct vm_area_struct *vma)
 
 		vma->vm_private_data = pdat;
 		vma->vm_ops = &vm_ops;
+
+		//The user needs the physical address for this buffer,
+		//so return it in the first 4 bytes.
+		//-- This is a pretty hacky solution
+		kvirt[0]=(void*)dma_handle;
+		phys_addr=dma_handle;
+
+		//printk(KERN_ERR "cma_mmap : mmap virtual=%p  physical=%p\n",vma->vm_start,(void*)dma_handle);
 	}
-	//The user needs the physical address for this buffer,
-	//so return it in the first 4 bytes.
-	//-- This is a pretty hacky solution
-	kvirt[0]=(void*)dma_handle;
-	//do the remap
-	pfn = (dma_handle) >> PAGE_SHIFT;
-	if( io_remap_pfn_range(vma, vma->vm_start, pfn, len,
-	                       vma->vm_page_prot)) {
+	if( vm_iomap_memory(vma, phys_addr, len)){
 		printk(KERN_ERR
 		       "cma_mmap - failed to map the memory\n");
 		retval = -EAGAIN;
 	}
-	printk(KERN_DEBUG "cma_mmap : mmap virtual=%p  physical=%p\n",kvirt,(void*)dma_handle);
 	return retval;
 }
 static int cma_open(struct inode *i, struct file *f){return 0;}
